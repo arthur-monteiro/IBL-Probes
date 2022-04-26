@@ -15,7 +15,8 @@ public:
 
 	ProbeGeneration(Wolf::WolfInstance* wolfInstance, Wolf::Scene* scene, const Wolf::Model* model, glm::mat4 modelMatrix, glm::vec3 lightDir, glm::vec3 lightColor, Wolf::Image* skyCubemap, Wolf::Sampler* cubemapSampler, Wolf::Model* cube, std::array<Wolf::UniformBuffer*, 6> probeMatricesUBs);
 
-	const Probe& GetProbe() const { return m_probes[0]; }
+	uint32_t GeProbeCount() const { return m_probes.size(); };
+	const Probe& GetProbe(uint32_t id) const { return m_probes[id]; }
 
 private:
 	// Common

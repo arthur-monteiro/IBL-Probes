@@ -338,17 +338,142 @@ SponzaScene::SponzaScene(Wolf::WolfInstance* wolfInstance)
 			descriptorSetGenerator.addImages({ m_cascadedShadowMapping->getOutputShadowMaskTexture() }, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT, 3);
 			descriptorSetGenerator.addImages({ m_cascadedShadowMapping->getOutputVolumetricLightMaskImage() }, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT, 4);
 			descriptorSetGenerator.addImages({ m_directLightingOutputImage }, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT, 5);
-			descriptorSetGenerator.addCombinedImageSampler(m_probeGeneration->GetProbe().irradiance, cubemapSampler, VK_SHADER_STAGE_COMPUTE_BIT, 7);
-			//descriptorSetGenerator.addCombinedImageSampler(m_probes[0].prefilter, cubemapSampler, VK_SHADER_STAGE_COMPUTE_BIT, 8);
+			descriptorSetGenerator.addSampler(cubemapSampler, VK_SHADER_STAGE_COMPUTE_BIT, 6);
+			descriptorSetGenerator.addImages({ m_probeGeneration->GetProbe(0).irradiance }, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT, 7);
+			descriptorSetGenerator.addImages({ m_probeGeneration->GetProbe(0).prefilter }, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT, 8);
 			descriptorSetGenerator.addCombinedImageSampler(m_brdfImage, cubemapSampler, VK_SHADER_STAGE_COMPUTE_BIT, 9);
 			descriptorSetGenerator.addCombinedImageSampler(m_skyCubemap, cubemapSampler, VK_SHADER_STAGE_COMPUTE_BIT, 10);
-			descriptorSetGenerator.addCombinedImageSampler(m_probeGeneration->GetProbe().cubeMap, cubemapSampler, VK_SHADER_STAGE_COMPUTE_BIT, 11);
-			descriptorSetGenerator.addUniformBuffer(m_directLightingUniformBuffer, VK_SHADER_STAGE_COMPUTE_BIT, 6);
+			descriptorSetGenerator.addCombinedImageSampler(m_probeGeneration->GetProbe(0).cubeMap, cubemapSampler, VK_SHADER_STAGE_COMPUTE_BIT, 11);
+			descriptorSetGenerator.addUniformBuffer(m_directLightingUniformBuffer, VK_SHADER_STAGE_COMPUTE_BIT, 12);
 
 			directLigtingComputePassCreateInfo.descriptorSetCreateInfo = descriptorSetGenerator.getDescritorSetCreateInfo();
 		}
 
 		m_scene->addComputePass(directLigtingComputePassCreateInfo);
+
+		// Debug
+		if (m_useDebug)
+		{
+			Model::ModelCreateInfo sphereModelCreateInfo{};
+			sphereModelCreateInfo.inputVertexTemplate = InputVertexTemplate::FULL_3D_MATERIAL;
+			Model* sphere = wolfInstance->createModel<>(sphereModelCreateInfo);
+
+			Model::ModelLoadingInfo sphereLoadingInfo;
+			sphereLoadingInfo.filename = std::move("Models/sphere.obj");
+			sphereLoadingInfo.loadMaterials = false;
+			sphere->loadObj(sphereLoadingInfo);
+
+			std::vector<Attachment> debugPassAttachments(2);
+			debugPassAttachments[0] = Attachment(wolfInstance->getWindowSize(), VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+				VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, depth);
+			debugPassAttachments[0].loadOperation = VK_ATTACHMENT_LOAD_OP_LOAD;
+			debugPassAttachments[1] = Attachment(wolfInstance->getWindowSize(), m_directLightingOutputImage->getFormat(), VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_LAYOUT_GENERAL,
+				VK_ATTACHMENT_STORE_OP_STORE, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT, m_directLightingOutputImage);
+			debugPassAttachments[1].loadOperation = VK_ATTACHMENT_LOAD_OP_LOAD;
+
+			Scene::CommandBufferCreateInfo debugCommandBufferCreateInfo;
+			debugCommandBufferCreateInfo.finalPipelineStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			debugCommandBufferCreateInfo.commandType = Scene::CommandType::GRAPHICS;
+			m_debugCommandBufferID = m_scene->addCommandBuffer(debugCommandBufferCreateInfo);
+
+			Scene::RenderPassCreateInfo debugRenderPassCreateInfo{};
+			debugRenderPassCreateInfo.name = "Debug render pass";
+			debugRenderPassCreateInfo.commandBufferID = m_debugCommandBufferID;
+			debugRenderPassCreateInfo.outputIsSwapChain = false;
+
+			// Change image layout
+			debugRenderPassCreateInfo.beforeRecord = [](void* data, VkCommandBuffer commandBuffer) -> void
+			{
+				const SponzaScene* thisPtr = static_cast<SponzaScene*>(data);
+				Image::transitionImageLayoutUsingCommandBuffer(commandBuffer, thisPtr->m_directLightingOutputImage->getImage(),
+					thisPtr->m_directLightingOutputImage->getFormat(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0);
+			};
+			debugRenderPassCreateInfo.dataForBeforeRecordCallback = this;
+
+			debugRenderPassCreateInfo.afterRecord = [](void* data, VkCommandBuffer commandBuffer) -> void
+			{
+				const SponzaScene* thisPtr = static_cast<SponzaScene*>(data);
+				Image::transitionImageLayoutUsingCommandBuffer(commandBuffer, thisPtr->m_directLightingOutputImage->getImage(),
+					thisPtr->m_directLightingOutputImage->getFormat(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, 1,
+					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0);
+			};
+			debugRenderPassCreateInfo.dataForAfterRecordCallback = this;
+
+			std::vector<VkClearValue> debugRenderPassClearValues;
+			debugRenderPassClearValues.resize(2);
+			debugRenderPassClearValues[0] = { -1.0f };
+			debugRenderPassClearValues[1] = { -1.0f, 0.0f, 0.0f, 1.0f };
+
+			int i(0);
+			for (auto& attachment : debugPassAttachments)
+			{
+				Scene::RenderPassOutput renderPassOutput;
+				renderPassOutput.attachment = attachment;
+				renderPassOutput.clearValue = debugRenderPassClearValues[i++];
+
+				debugRenderPassCreateInfo.outputs.push_back(renderPassOutput);
+			}
+
+			int debugRenderPassID = m_scene->addRenderPass(debugRenderPassCreateInfo);
+
+			// Renderer
+			RendererCreateInfo rendererCreateInfo;
+
+			ShaderCreateInfo vertexShaderCreateInfo{};
+			vertexShaderCreateInfo.filename = "Shaders/debug/vert.spv";
+			vertexShaderCreateInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+			rendererCreateInfo.pipelineCreateInfo.shaderCreateInfos.push_back(vertexShaderCreateInfo);
+
+			ShaderCreateInfo fragmentShaderCreateInfo{};
+			fragmentShaderCreateInfo.filename = "Shaders/debug/frag.spv";
+			fragmentShaderCreateInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+			rendererCreateInfo.pipelineCreateInfo.shaderCreateInfos.push_back(fragmentShaderCreateInfo);
+
+			rendererCreateInfo.inputVerticesTemplate = InputVertexTemplate::FULL_3D_MATERIAL;
+
+			rendererCreateInfo.instanceTemplate = InstanceTemplate::NO;
+			std::vector<VkVertexInputAttributeDescription> inputAttributeDescriptions = InstanceDebug::getAttributeDescriptions(1, 5);
+			std::vector<VkVertexInputBindingDescription> inputBindingDescriptions = { InstanceDebug::getBindingDescription(1) };
+
+			for (VkVertexInputAttributeDescription& inputAttributeDescription : inputAttributeDescriptions)
+				rendererCreateInfo.pipelineCreateInfo.vertexInputAttributeDescriptions.push_back(inputAttributeDescription);
+			for (VkVertexInputBindingDescription& inputBindingDescription : inputBindingDescriptions)
+				rendererCreateInfo.pipelineCreateInfo.vertexInputBindingDescriptions.push_back(inputBindingDescription);
+
+			rendererCreateInfo.renderPassID = debugRenderPassID;
+
+			rendererCreateInfo.pipelineCreateInfo.alphaBlending = { true };
+
+			DescriptorSetGenerator descriptorSetGenerator;
+
+			m_debugUBData.model = glm::scale(glm::vec3(0.05f));
+			m_debugUBData.projection = m_projectionMatrix;
+			m_debugUniformBuffer = wolfInstance->createUniformBufferObject(&m_debugUBData, sizeof(m_debugUBData));
+			descriptorSetGenerator.addUniformBuffer(m_debugUniformBuffer, VK_SHADER_STAGE_VERTEX_BIT, 0);
+			descriptorSetGenerator.addSampler(cubemapSampler, VK_SHADER_STAGE_FRAGMENT_BIT, 1);
+			descriptorSetGenerator.addImages({ m_probeGeneration->GetProbe(0).irradiance }, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_FRAGMENT_BIT, 2);
+
+			rendererCreateInfo.descriptorSetLayout = descriptorSetGenerator.getDescriptorLayouts();
+
+			int debugRendererID = m_scene->addRenderer(rendererCreateInfo);
+
+			Renderer::AddMeshInfo addMeshInfo{};
+			addMeshInfo.vertexBuffer = sphere->getVertexBuffers()[0];
+
+			Instance<InstanceDebug>* instance = wolfInstance->createInstanceBuffer<InstanceDebug>();
+			std::vector<InstanceDebug> instanceData;
+			instanceData.push_back({ m_probeGeneration->GetProbe(0).position, 0 });
+			instance->loadFromVector(instanceData);
+
+			addMeshInfo.instanceBuffer = instance->getInstanceBuffer();
+			addMeshInfo.renderPassID = debugRenderPassID;
+			addMeshInfo.rendererID = debugRendererID;
+
+			addMeshInfo.descriptorSetCreateInfo = descriptorSetGenerator.getDescritorSetCreateInfo();
+
+			m_scene->addMesh(addMeshInfo);
+		}
 
 		// Tone mapping
 		Scene::ComputePassCreateInfo toneMappingComputePassCreateInfo;
@@ -384,6 +509,9 @@ void SponzaScene::update()
 	m_directLightingUBData.invView = glm::mat4(glm::mat3(glm::inverse(m_viewMatrix)));
 	m_directLightingUBData.directionDirectionalLight = glm::transpose(m_directLightingUBData.invView) * glm::vec4(m_lightDir, 1.0f);
 	m_directLightingUniformBuffer->updateData(&m_directLightingUBData);
+
+	m_debugUBData.view = m_viewMatrix;
+	m_debugUniformBuffer->updateData(&m_debugUBData);
 }
 
 std::vector<int> SponzaScene::getCommandBufferToSubmit()
@@ -394,6 +522,7 @@ std::vector<int> SponzaScene::getCommandBufferToSubmit()
 	for (auto& commandBuffer : csmCommandBuffer)
 		r.push_back(commandBuffer);
 	r.push_back(m_directLightingCommandBufferID);
+	r.push_back(m_debugCommandBufferID);
 
 	return r;
 }
@@ -409,7 +538,8 @@ std::vector<std::pair<int, int>> SponzaScene::getCommandBufferSynchronisation()
 		r.push_back(sync);
 	}
 	r.emplace_back(m_cascadedShadowMapping->getCascadeCommandBuffers().back(), m_directLightingCommandBufferID);
-	r.emplace_back(m_directLightingCommandBufferID, -1);
+	r.emplace_back(m_directLightingCommandBufferID, m_debugCommandBufferID);
+	r.emplace_back(m_debugCommandBufferID, -1);
 	
 	return r;
 }

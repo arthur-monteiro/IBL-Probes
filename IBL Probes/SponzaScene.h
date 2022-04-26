@@ -56,5 +56,49 @@ private:
 	DirectLightingUBData m_directLightingUBData;
 	Wolf::UniformBuffer* m_directLightingUniformBuffer;
 	int m_directLightingCommandBufferID;
+
+	// Debug
+	bool m_useDebug = true; // dynamically modified
+	int m_debugCommandBufferID = -2;
+	struct InstanceDebug
+	{
+		glm::vec3 posOffset;
+		glm::uint32_t id;
+
+		static VkVertexInputBindingDescription getBindingDescription(uint32_t binding)
+		{
+			VkVertexInputBindingDescription bindingDescription = {};
+			bindingDescription.binding = binding;
+			bindingDescription.stride = sizeof(InstanceDebug);
+			bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+
+			return bindingDescription;
+		}
+
+		static std::vector<VkVertexInputAttributeDescription> getAttributeDescriptions(uint32_t binding, uint32_t startLocation)
+		{
+			std::vector<VkVertexInputAttributeDescription> attributeDescriptions(2);
+
+			attributeDescriptions[0].binding = binding;
+			attributeDescriptions[0].location = startLocation;
+			attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+			attributeDescriptions[0].offset = 0;
+
+			attributeDescriptions[1].binding = binding;
+			attributeDescriptions[1].location = startLocation;
+			attributeDescriptions[1].format = VK_FORMAT_R32_UINT;
+			attributeDescriptions[1].offset = 1;
+
+			return attributeDescriptions;
+		}
+	};
+	struct DebugUBData
+	{
+		glm::mat4 model;
+		glm::mat4 view;
+		glm::mat4 projection;
+	};
+	DebugUBData m_debugUBData;
+	Wolf::UniformBuffer* m_debugUniformBuffer;
 };
 
